@@ -1,3 +1,3 @@
-module Q1
+module pset1
 
 go 1.21.2
