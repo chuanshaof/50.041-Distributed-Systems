@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -80,7 +79,7 @@ type Node struct {
 // RequestAccess simulates a node requesting access to a critical section
 func (n *Node) RequestAccess() {
 	defer wg.Done()
-	time.Sleep(time.Duration(rand.Intn(1)) * time.Second) // simulate random requests
+	// time.Sleep(time.Duration(rand.Intn(1)) * time.Second) // simulate random requests
 
 	// Requesting access to critical section
 	// Increment logical clock by 1 and add request to queue
@@ -115,10 +114,12 @@ func (n *Node) RequestAccess() {
 
 	n.Mutex.Lock()
 	// Critical section
-	fmt.Println("Node", n.ID, "entering critical section")
-	fmt.Println("Current Queue: ", n.Queue)
-	time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second) // simulate critical section work
-	fmt.Println("Node", n.ID, "leaving critical section")
+	// fmt.Println("Node", n.ID, "entering critical section")
+	// fmt.Println("Current Queue: ", n.Queue)
+	// time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second) // simulate critical section work
+	// fmt.Println("Node", n.ID, "leaving critical section")
+
+	time.Sleep(300 * time.Millisecond)
 
 	// Removing itself from its own queue once work is done
 	n.Queue.Pop()
@@ -213,14 +214,29 @@ func main() {
 	}
 	mu.Unlock()
 
-	// Simulate each node requesting access individually
-	for _, node := range nodes {
-		wg.Add(1)
-		go func(n *Node) {
-			n.RequestAccess()
-		}(node)
+	for i := 1; i <= 10; i++ {
+		startTime := time.Now()
+		// Run concurrently if necessary
+		for j := 1; j <= i; j++ {
+			wg.Add(1)
+			go func(n *Node) {
+				n.RequestAccess()
+			}(nodes[j-1])
+		}
+		wg.Wait()
+		duration := time.Since(startTime)
+		fmt.Println("Time taken for", i, "concurrent nodes:", duration)
 	}
 
+	// // Simulate each node requesting access individually
+	// for _, node := range nodes {
+	// 	wg.Add(1)
+	// 	go func(n *Node) {
+	// 		n.RequestAccess()
+	// 	}(node)
+	// }
+
+	// Debug purposes
 	// for {
 	// 	for _, node := range nodes {
 	// 		fmt.Println(node.ID, node.Queue, node.Acknowledges, node.MsgChannel, node.Clock)

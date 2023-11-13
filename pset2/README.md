@@ -1,7 +1,7 @@
-The problems solved are utilizing Scalar Clock + machine ID as stipulated by the correction on edimension.
-
 # Overview
 Each file will have its own README sections and the documentation on how to interpret the outcome as shown below.
+
+All problems have been solved utilizing Scalar Clock + machine ID as stipulated by the correction on edimension.
 
 ## How to Run:
 The same method to run is used for all files. Please replace \<folder\> and \<file.go\> as accordingly.
@@ -10,7 +10,7 @@ The same method to run is used for all files. Please replace \<folder\> and \<fi
 2. Navigate to the directory where the program is located.
 3. Use `go run` to run the file. There will be no command line arguments required.
 ```
-cd pset1/<folder>
+cd pset2/<folder>
 go run <file.go>
 ```
 
@@ -21,6 +21,34 @@ No external packages were used for this entire pset.
 No additional flags will be required in this entire pset as all simulation has been planned out in sequence. Please read the output in the command line to understand the scenario at each step.
 
 <br><br><br>
+
+# lamportQueue.go
+This is a Go program that simulates a distributed mutual-exclusion algorithm mimicking Lamport's Priority Queue. 
+
+
+Time taken for 1 concurrent nodes: 320.576ms
+Time taken for 2 concurrent nodes: 641.0551ms
+Time taken for 3 concurrent nodes: 944.9917ms
+Time taken for 4 concurrent nodes: 1.2891332s
+Time taken for 5 concurrent nodes: 1.5990818s
+Time taken for 6 concurrent nodes: 1.9301639s
+Time taken for 7 concurrent nodes: 2.2434907s
+Time taken for 8 concurrent nodes: 2.6373256s
+Time taken for 9 concurrent nodes: 2.9612435s
+Time taken for 10 concurrent nodes: 3.2255014s
+
+# ricartAgrawala.go
+Time taken for 1 concurrent nodes: 322.2789ms
+Time taken for 2 concurrent nodes: 634.3518ms
+Time taken for 3 concurrent nodes: 964.1507ms
+Time taken for 4 concurrent nodes: 1.3061782s
+Time taken for 5 concurrent nodes: 1.6235079s
+Time taken for 6 concurrent nodes: 1.8809189s
+Time taken for 7 concurrent nodes: 2.2747769s
+Time taken for 8 concurrent nodes: 2.571568s
+Time taken for 9 concurrent nodes: 2.884402s
+Time taken for 10 concurrent nodes: 3.1669846s
+
 
 # lamport.go
 This is a Go program that simulates a server-client message-passing system. Clients send messages to the server and the server can either forward these messages to all other clients or drop them. 
