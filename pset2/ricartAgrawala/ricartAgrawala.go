@@ -56,9 +56,22 @@ func (q *RequestQueue) Add(msg Message) {
 	sort.Sort(q)
 }
 
+func (q *RequestQueue) Remove(senderID int) {
+	for i, msg := range *q {
+		if msg.SenderID == senderID {
+			*q = append((*q)[:i], (*q)[i+1:]...)
+			break
+		}
+	}
+}
+
 func (q *RequestQueue) Pop() {
 	// Remove first item in the queue
-	*q = (*q)[1:]
+	if q.Len() == 0 {
+		return
+	} else {
+		*q = (*q)[1:]
+	}
 }
 
 // Node struct
@@ -80,88 +93,71 @@ func (n *Node) RequestAccess() {
 
 	// Requesting access to critical section
 	// Increment logical clock by 1 and add request to queue
+	n.Mutex.Lock()
 	n.Clock++
 	n.RequestTime = n.Clock
 	msg := Message{Type: Request, Timestamp: n.Clock, SenderID: n.ID}
 	n.Queue.Add(msg)
 
 	// Send request message to all peers & set all acknowledgments to false
-	n.broadcastRequest(msg)
-
-	n.Mutex.Lock()
 	for _, peer := range n.Peers {
+		peer.MsgChannel <- msg
 		n.Acknowledges[peer.ID] = false
 	}
 	n.Mutex.Unlock()
 
 	// Wait for acknowledgments from all peers
 	for {
-		n.Mutex.Lock()
 		allAcked := true
 		for _, acked := range n.Acknowledges {
 			if !acked {
 				allAcked = false
-				break // out of `for`` loop
+				break // out of `for` loop
 			}
 		}
 
 		if allAcked {
-			break // out of `while`` loop
+			break // out of `while` loop
 		}
-		n.Mutex.Unlock()
 		time.Sleep(10 * time.Millisecond) // simulate waiting & polling
 	}
 
+	n.Mutex.Lock()
 	// Critical section
-	fmt.Printf("Node %d entering critical section\n", n.ID)
+	fmt.Println("Node", n.ID, "entering critical section")
+	fmt.Println("Current Queue: ", n.Queue)
 	time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second) // simulate critical section work
-	fmt.Printf("Node %d leaving critical section\n", n.ID)
+	fmt.Println("Node", n.ID, "leaving critical section")
 
 	// Removing itself from its own queue once work is done
-
 	n.Queue.Pop()
 
-	// Send release message to all peers
-	n.broadcastRelease()
-	n.RequestTime = -1
-
-	// Acknowledge other requests in the queue
+	// Sending acknowledgement for everything else in the queue
+	acknowledgeMsg := Message{Type: Acknowledge, Timestamp: n.Clock, SenderID: n.ID}
 	for _, msg := range n.Queue {
-		ackMsg := Message{Type: Acknowledge, Timestamp: n.Clock, SenderID: n.ID}
-		for _, peer := range n.Peers {
-			if peer.ID == msg.SenderID {
-				peer.MsgChannel <- ackMsg
+		if msg.SenderID != n.ID {
+			for _, peer := range n.Peers {
+				if peer.ID == msg.SenderID {
+					peer.MsgChannel <- acknowledgeMsg
+				}
 			}
 		}
+		n.Queue.Pop()
 	}
-}
 
-// Broadcasts a request message to all peers
-func (n *Node) broadcastRequest(msg Message) {
-	for _, peer := range n.Peers {
-		peer.MsgChannel <- msg
-	}
-}
-
-// Broadcasts a release message to all peers
-func (n *Node) broadcastRelease() {
-	releaseMsg := Message{Type: Release, Timestamp: n.Clock, SenderID: n.ID}
-	for _, peer := range n.Peers {
-		peer.MsgChannel <- releaseMsg
-	}
+	n.RequestTime = -1
+	n.Mutex.Unlock()
 }
 
 // Listen to all messages coming in on the node's message channel
 func (n *Node) Listen() {
 	for msg := range n.MsgChannel {
+		n.Mutex.Lock()
+		n.Clock = max(n.Clock+1, msg.Timestamp)
 		switch msg.Type {
 		case Request:
-			// fmt.Println("Node", n.ID, "received message of request from node", msg.SenderID, "with timestamp", msg.Timestamp)
-
-			// Update node logical clock and add request to queue
-			n.Clock = max(n.Clock+1, msg.Timestamp)
-
-			if n.RequestTime < msg.Timestamp || (n.RequestTime == msg.Timestamp && n.ID < msg.SenderID) {
+			// Add requests that are behind in the queue
+			if n.RequestTime != -1 && (msg.Timestamp > n.RequestTime || (n.RequestTime == msg.Timestamp && msg.SenderID > n.ID)) {
 				n.Queue.Add(msg)
 			}
 
@@ -175,21 +171,22 @@ func (n *Node) Listen() {
 				}
 			}
 
-		// Poll for release requests
-		case Release:
-			// fmt.Println("Node", n.ID, "received message of release from node", msg.SenderID, "with timestamp", msg.Timestamp)
+		// // Poll for release requests
+		// case Release:
+		// 	// Remove previous request from queue
+		// 	n.Queue.Pop()
 
-			// Update logical clock and remove request from queue
-			n.Clock = max(n.Clock+1, msg.Timestamp)
+		// 	// Release also means acknowledging the request
+		// 	n.Acknowledges[msg.SenderID] = true
 
 		// Waiting for nodes to acknowledge its own request
 		case Acknowledge:
-			// fmt.Println("Node", n.ID, "received message of acknowledge from node", msg.SenderID, "with timestamp", msg.Timestamp)
-
-			n.Mutex.Lock()
 			n.Acknowledges[msg.SenderID] = true
-			n.Mutex.Unlock()
+			// n.Queue.Remove(msg.SenderID)
+
+			// fmt.Println("Node", n.ID, "received acknowledgement from", msg.SenderID, n.Queue)
 		}
+		n.Mutex.Unlock()
 	}
 }
 
@@ -212,7 +209,7 @@ func NewNode(id int) *Node {
 }
 
 func main() {
-	count := 8
+	count := 10
 	// Create a network of nodes
 	var nodes []*Node
 	for i := 0; i < count; i++ {
@@ -226,7 +223,6 @@ func main() {
 				nodes[i].Peers = append(nodes[i].Peers, nodes[j])
 			}
 		}
-		// nodes[i].Peers = nodes
 	}
 
 	// Start each node's message handling in a separate goroutine
@@ -242,8 +238,13 @@ func main() {
 		}(node)
 	}
 
-	wg.Wait()
+	// for {
+	// 	for _, node := range nodes {
+	// 		fmt.Println(node.ID, node.Queue, node.Acknowledges, node.Clock)
+	// 	}
 
-	// Wait for a while to allow all nodes to process
-	// time.Sleep(100 * time.Second)
+	// 	time.Sleep(1 * time.Second)
+	// }
+
+	wg.Wait()
 }

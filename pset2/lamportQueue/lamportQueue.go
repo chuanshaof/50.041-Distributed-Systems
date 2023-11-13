@@ -84,6 +84,7 @@ func (n *Node) RequestAccess() {
 
 	// Requesting access to critical section
 	// Increment logical clock by 1 and add request to queue
+	n.Mutex.Lock()
 	n.Clock++
 	n.RequestTime = n.Clock
 	msg := Message{Type: Request, Timestamp: n.Clock, SenderID: n.ID}
@@ -92,11 +93,9 @@ func (n *Node) RequestAccess() {
 	// Send request message to all peers & set all acknowledgments to false
 	for _, peer := range n.Peers {
 		peer.MsgChannel <- msg
-	}
-
-	for _, peer := range n.Peers {
 		n.Acknowledges[peer.ID] = false
 	}
+	n.Mutex.Unlock()
 
 	// Wait for acknowledgments from all peers
 	for {
@@ -114,10 +113,12 @@ func (n *Node) RequestAccess() {
 		time.Sleep(10 * time.Millisecond) // simulate waiting & polling
 	}
 
+	n.Mutex.Lock()
 	// Critical section
-	fmt.Printf("Node %d entering critical section\n", n.ID)
+	fmt.Println("Node", n.ID, "entering critical section")
+	fmt.Println("Current Queue: ", n.Queue)
 	time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second) // simulate critical section work
-	fmt.Printf("Node %d leaving critical section\n", n.ID)
+	fmt.Println("Node", n.ID, "leaving critical section")
 
 	// Removing itself from its own queue once work is done
 	n.Queue.Pop()
@@ -128,11 +129,13 @@ func (n *Node) RequestAccess() {
 		peer.MsgChannel <- releaseMsg
 	}
 	n.RequestTime = -1
+	n.Mutex.Unlock()
 }
 
 // Listen to all messages coming in on the node's message channel
 func (n *Node) Listen() {
 	for msg := range n.MsgChannel {
+		n.Mutex.Lock()
 		n.Clock = max(n.Clock+1, msg.Timestamp)
 		switch msg.Type {
 		case Request:
@@ -161,6 +164,7 @@ func (n *Node) Listen() {
 		case Acknowledge:
 			n.Acknowledges[msg.SenderID] = true
 		}
+		n.Mutex.Unlock()
 	}
 }
 
@@ -184,6 +188,10 @@ func NewNode(id int) *Node {
 
 func main() {
 	count := 10
+
+	// Setting up of nodes, requires locking
+	mu := sync.Mutex{}
+	mu.Lock()
 	// Create a network of nodes
 	var nodes []*Node
 	for i := 0; i < count; i++ {
@@ -203,6 +211,7 @@ func main() {
 	for _, node := range nodes {
 		go node.Listen()
 	}
+	mu.Unlock()
 
 	// Simulate each node requesting access individually
 	for _, node := range nodes {
