@@ -1,0 +1,10 @@
+go 1.21.2
+
+use (
+    /pset1/lamport
+    /pset1/vector
+    /pset1/bully
+    /pset2/lamportQueue
+    /pset2/ricartAgrawala
+    /pset2/votingProtocol
+)

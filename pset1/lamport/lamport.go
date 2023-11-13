@@ -60,9 +60,13 @@ func (c *Client) PollForMessage() {
 					c.LamportClock = m.LamportClock
 				}
 				c.LamportClock++
-				m.Receiver = c.Id
 
-				allMessages = append(allMessages, m)
+				allMessages = append(allMessages, Message{
+					m.Id,
+					m.Sender,
+					c.Id,
+					c.LamportClock,
+				})
 				fmt.Println("Message ID: " + strconv.Itoa(m.Id) + " Client " + strconv.Itoa(c.Id) + " receiving. LamportClock: " + strconv.Itoa(c.LamportClock))
 			}
 		}
