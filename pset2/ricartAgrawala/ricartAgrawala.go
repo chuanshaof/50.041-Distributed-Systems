@@ -129,7 +129,7 @@ func (n *Node) RequestAccess() {
 	// time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second) // simulate critical section work
 	// fmt.Println("Node", n.ID, "leaving critical section")
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Removing itself from its own queue once work is done
 	n.Queue.Pop()
@@ -173,20 +173,9 @@ func (n *Node) Listen() {
 				}
 			}
 
-		// // Poll for release requests
-		// case Release:
-		// 	// Remove previous request from queue
-		// 	n.Queue.Pop()
-
-		// 	// Release also means acknowledging the request
-		// 	n.Acknowledges[msg.SenderID] = true
-
 		// Waiting for nodes to acknowledge its own request
 		case Acknowledge:
 			n.Acknowledges[msg.SenderID] = true
-			// n.Queue.Remove(msg.SenderID)
-
-			// fmt.Println("Node", n.ID, "received acknowledgement from", msg.SenderID, n.Queue)
 		}
 		n.Mutex.Unlock()
 	}

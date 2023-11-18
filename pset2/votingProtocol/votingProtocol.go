@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -122,11 +121,11 @@ func (n *Node) RequestAccess() {
 	}
 
 	n.Mutex.Lock()
-	fmt.Printf("Node %d entering critical section\n", n.ID)
-	time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second)
-	fmt.Printf("Node %d leaving critical section\n", n.ID)
+	// fmt.Printf("Node %d entering critical section\n", n.ID)
+	// time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second)
+	// fmt.Printf("Node %d leaving critical section\n", n.ID)
 
-	// time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	releaseMsg := Message{Type: Release, Timestamp: n.Clock, SenderID: n.ID}
 	for _, peer := range n.Peers {
@@ -181,7 +180,9 @@ func (n *Node) Listen() {
 
 		case Release:
 			// Release vote
-			n.VoteFor = -1
+			if n.VoteFor != n.ID {
+				n.VoteFor = -1
+			}
 
 			// Process the release message
 			// For the case where it is not a rescinded one
@@ -193,13 +194,15 @@ func (n *Node) Listen() {
 
 			// Vote for the next request in the queue
 			// Could be both for rescinded & actual releases
-			if n.Queue.Len() > 0 {
-				nextReq := n.Queue[0]
-				voteMsg := Message{Type: Vote, Timestamp: n.Clock, SenderID: n.ID}
-				n.VoteFor = nextReq.SenderID
-				for _, peer := range n.Peers {
-					if peer.ID == nextReq.SenderID {
-						peer.MsgChannel <- voteMsg
+			if n.VoteFor != n.ID {
+				if n.Queue.Len() > 0 {
+					nextReq := n.Queue[0]
+					voteMsg := Message{Type: Vote, Timestamp: n.Clock, SenderID: n.ID}
+					n.VoteFor = nextReq.SenderID
+					for _, peer := range n.Peers {
+						if peer.ID == nextReq.SenderID {
+							peer.MsgChannel <- voteMsg
+						}
 					}
 				}
 			}
@@ -269,7 +272,7 @@ func main() {
 	}
 	mu.Unlock()
 
-	for i := 8; i <= 10; i++ {
+	for i := 1; i <= 10; i++ {
 		startTime := time.Now()
 		// Run concurrently if necessary
 		for j := 1; j <= i; j++ {
@@ -277,11 +280,6 @@ func main() {
 			go func(n *Node) {
 				n.RequestAccess()
 			}(nodes[j-1])
-		}
-
-		time.Sleep(5 * time.Second)
-		for _, node := range nodes {
-			fmt.Println("Node", node.ID, node.Queue, node.VoteFor, node.VotesReceived)
 		}
 
 		wg.Wait()

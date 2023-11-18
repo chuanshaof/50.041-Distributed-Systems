@@ -119,7 +119,7 @@ func (n *Node) RequestAccess() {
 	// time.Sleep(time.Duration(rand.Intn(1)+1) * time.Second) // simulate critical section work
 	// fmt.Println("Node", n.ID, "leaving critical section")
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Removing itself from its own queue once work is done
 	n.Queue.Pop()
