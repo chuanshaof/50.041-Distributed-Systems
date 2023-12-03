@@ -9,10 +9,11 @@ import (
 )
 
 var wg sync.WaitGroup
-var mainCM *CentralManager
-var backupCM *CentralManager
+var cms []*CentralManager
 var processors []*Processor
-var requests int
+var requests int                         // Keeps track of how many requests left to handle
+var requestChannels map[int]chan Request // Use a centralized queue like how a proxy/API works
+var inAccess bool                        // To prevent concurrent reads from the channel
 
 type Page struct {
 	id   int
@@ -31,20 +32,18 @@ type Request struct {
 
 // CentralManager manages the pages
 type CentralManager struct {
-	id             int
-	mu             sync.Mutex
-	metaData       map[int]*PageMetaData // Store metadata of pages
-	requestChannel map[int]chan Request  // To ensure sequential access to the page
-	backup         bool
-	dead           bool
+	id       int
+	mu       sync.Mutex
+	metaData map[int]*PageMetaData // Store metadata of pages
+	backup   bool
+	dead     bool
 }
 
 // Constructor
 func NewCentralManager(id int) *CentralManager {
 	return &CentralManager{
-		id:             id,
-		metaData:       make(map[int]*PageMetaData),
-		requestChannel: make(map[int]chan Request),
+		id:       id,
+		metaData: make(map[int]*PageMetaData),
 	}
 }
 
@@ -64,100 +63,127 @@ func NewProcessor(id int) *Processor {
 	}
 }
 
+/** --------------------------- Replication Methods --------------------------- */
+// Run constant healthCheck to see if other CM is dead -- only used for backupCM
 func (cm *CentralManager) healthCheck(otherCM *CentralManager) {
 	for {
-		if cm.dead || !cm.backup {
-			continue
+		if cm.dead {
+			return
 		}
 
-		// Check if the other CM is dead or a back up now, if so, take over
-		if otherCM.dead || otherCM.backup {
+		// Check if the other CM is dead, if so, take over
+		if cm.backup && otherCM.dead {
 			cm.backup = false
-			fmt.Printf("Central Manager [%d] is now the main CM\n", cm.id)
+			fmt.Println("\n================================================================")
+			fmt.Println("Main CM down detected...")
+			fmt.Printf("CM [%d] has taken over\n", cm.id)
+			fmt.Println("================================================================")
+		} else if !otherCM.dead {
+			cm.backup = true
 		}
+
+		// Simulate polling to not flood the mainCM
+		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
-// Replication of metaData
-func (cm *CentralManager) replicateMetaData(metaData map[int]*PageMetaData, replyChannel chan string) {
+// Request to replicate metaData, called from the main CM
+func (cm *CentralManager) replicateMetaData() {
+	replicationChannel := make(chan string)
+	go cms[cm.id^1].replicateReply(cm.metaData, replicationChannel)
+	select {
+	case reply := <-replicationChannel:
+		fmt.Printf(reply)
+	case <-time.After(1 * time.Millisecond): // Simulate waiting for reply
+		fmt.Printf("CM [%d] is dead, cannot replicate\n", cm.id)
+	}
+}
+
+// Request to replicate metaData, called to the backup CM
+func (cm *CentralManager) replicateReply(metaData map[int]*PageMetaData, replicationChannel chan string) {
+	if cm.dead {
+		return
+	}
+
 	// Replicate data to other CM
 	cm.metaData = metaData
-	replyChannel <- fmt.Sprintf("MetaData replication confirmation from CM [%d]\n", cm.id)
+	replicationChannel <- fmt.Sprintf("MetaData replication confirmation coming from CM [%d]\n", cm.id)
 }
 
-// Replication of requests
-func (cm *CentralManager) replicateRequest(request Request, pageId int, replyChannel chan string) {
-	// Send a copy of the page to the receiver
-	cm.requestChannel[pageId] <- request
-	replyChannel <- fmt.Sprintf("Request replication confirmation from CM [%d]\n", cm.id)
-}
-
+/** --------------------------- CM Handling Methods --------------------------- */
 // Handle initial requests from the clients
 func (cm *CentralManager) handleRequest(pageId int) {
 	for {
 		// Skip the listener if it is a backup or dead
-		if cm.backup || cm.dead {
+		if cm.backup || cm.dead || inAccess {
 			continue
 		}
 
 		select {
-		case request := <-cm.requestChannel[pageId]:
+		case request := <-requestChannels[pageId]:
+			inAccess = true
 			cm.mu.Lock()
-
-			fmt.Printf("START: Handling processor [%d] request to %s page %d\n", request.processorId, request.accessType, pageId)
-
-			// For main server, check if CM is dead and if there is a need to replicate
-			// There is no need to check for backup server, see README for explaination
-			if cm != backupCM && !backupCM.dead {
-				// Replicate request to backup
-				// FIXME: The replication has issues, sometimes before the replication is done, the main CM is dead
-				fmt.Printf("Replicating request to CM [%d]\n", backupCM.id)
-				replyChannel := make(chan string)
-				go backupCM.replicateRequest(request, pageId, replyChannel)
-				fmt.Printf(<-replyChannel)
-			}
+			fmt.Printf("\nSTART: CM [%d] Handling processor [%d] request to %s page %d\n", cm.id, request.processorId, request.accessType, pageId)
 
 			requester := processors[request.processorId]
 
 			// Check for access types
-			if cm.metaData[pageId].owner == -1 {
+			if cm.metaData[pageId].owner == -1 { // If the page has no owner
 				// Set owner to the processor
 				cm.metaData[pageId].owner = request.processorId
 
+				// Replication of metaData to ensure consistency
+				cm.replicateMetaData()
+
 				// Grant access to the requester
-				messsageChannel := make(chan string)
+				replyChannel := make(chan string)
 				page := &Page{
 					id:   pageId,
 					data: 1,
 				}
-				go requester.receivePage(request, page, messsageChannel)
-				fmt.Println(<-messsageChannel)
-			} else if request.processorId == cm.metaData[pageId].owner {
+				go requester.receivePage(request, page, replyChannel)
+				fmt.Println(<-replyChannel)
+			} else if request.processorId == cm.metaData[pageId].owner { // If it the owner
 				// For write requests, invalidate copy sets
 				if request.accessType == "write" {
 					cm.invalidateCopies(pageId)
 				}
 
 				// Grant access to the requester
-				messsageChannel := make(chan string)
-				go requester.receivePage(request, requester.cache[pageId], messsageChannel)
-				fmt.Println(<-messsageChannel)
-			} else if request.accessType == "read" {
+				replyChannel := make(chan string)
+				go requester.receivePage(request, requester.cache[pageId], replyChannel)
+				fmt.Println(<-replyChannel)
+			} else if request.accessType == "read" { // If it is a read request
 				// Check if it is currently in a "write" access state, change to "read"
-				// This will not happen as the owner is the requester, handled above
+				// This will not happen as the owner would be the requester, handled above
 				if requester.access[pageId] == "write" {
 					requester.access[pageId] = "read"
 					continue
 				}
+
 				// Check if owner is currently in a "write" access state
 				if processors[cm.metaData[pageId].owner].access[pageId] == "write" {
 					// Block & wait until access is turned to "read"
 					// In this case, we simulate and bypass waiting
 					processors[cm.metaData[pageId].owner].access[pageId] = "read"
+
+					// Replication of metaData to ensure consistency
+					cm.replicateMetaData()
+				}
+
+				// Check if already exists in copyset, send page immediately then
+				for _, processorId := range cm.metaData[pageId].copySet {
+					if processorId == request.processorId {
+						// Grant access to the requester
+						replyChannel := make(chan string)
+						go requester.receivePage(request, requester.cache[pageId], replyChannel)
+						fmt.Println(<-replyChannel)
+						continue
+					}
 				}
 
 				cm.readPage(request, pageId)
-			} else if request.accessType == "write" {
+			} else if request.accessType == "write" { // If it is a write request
 				cm.writePage(request, pageId)
 			}
 
@@ -165,13 +191,14 @@ func (cm *CentralManager) handleRequest(pageId int) {
 			fmt.Printf("Page %d is now owned by [%d] with %s access\n", pageId, cm.metaData[pageId].owner, processors[cm.metaData[pageId].owner].access[pageId])
 
 			for i, page := range cm.metaData {
-				fmt.Printf("[MetaData] Page %d: Owner: %d, CopySet: %v\n", i, page.owner, page.copySet)
+				fmt.Printf("[CM %d MetaData] Page %d: Owner: %d, CopySet: %v\n", cm.id, i, page.owner, page.copySet)
 			}
-			fmt.Printf("\n")
 
 			// For the purpose of measuring performance
 			time.Sleep(1 * time.Millisecond)
 			requests = requests - 1
+			inAccess = false
+
 			cm.mu.Unlock()
 		}
 	}
@@ -179,8 +206,12 @@ func (cm *CentralManager) handleRequest(pageId int) {
 
 // Faciliate "READ" requests from the client
 func (cm *CentralManager) readPage(request Request, pageId int) {
-	// Add processor to copySet
+	// Add processor to copySet if not in array
 	cm.metaData[pageId].copySet = append(cm.metaData[pageId].copySet, request.processorId)
+	fmt.Printf("Adding processor [%d] to copy set of page %d\n", request.processorId, pageId)
+
+	// Replication of metaData to ensure consistency
+	cm.replicateMetaData()
 
 	// Handle and search for the page owner & make request to readPage
 	owner := cm.metaData[pageId].owner
@@ -197,16 +228,23 @@ func (cm *CentralManager) writePage(request Request, pageId int) {
 	// Invalidating copy sets
 	cm.invalidateCopies(pageId)
 
+	// Original owner of the page
+	originalOwner := cm.metaData[pageId].owner
+
+	// Update the owner
+	cm.metaData[pageId].owner = request.processorId
+	fmt.Printf("Updating owner of page %d to processor [%d]\n", pageId, request.processorId)
+
+	// Replication of metaData to ensure consistency
+	cm.replicateMetaData()
+
 	// Trigger for processor to pass data to another processor
-	owner := cm.metaData[pageId].owner
-	fmt.Printf("Write forward to processor [%d]\n", owner)
+	fmt.Printf("Write forward to processor [%d]\n", originalOwner)
 	replyChannel := make(chan string)
-	go processors[owner].sendPage(request, pageId, processors[request.processorId], replyChannel)
+	go processors[originalOwner].sendPage(request, pageId, processors[request.processorId], replyChannel)
 
 	// Blocking call to wait for reply
 	fmt.Println(<-replyChannel)
-
-	cm.metaData[pageId].owner = request.processorId
 }
 
 // Invalidation of ALL copies on server copy set
@@ -218,10 +256,25 @@ func (cm *CentralManager) invalidateCopies(pageId int) {
 		go processors[processorId].invalidateCopy(pageId, replyChannel)
 		// Blocking call to wait for reply
 		fmt.Printf(<-replyChannel)
+		cm.metaData[pageId].copySet = remove(cm.metaData[pageId].copySet, processorId)
+
+		// Replication of metaData to ensure consistency
+		cm.replicateMetaData()
 	}
-	cm.metaData[pageId].copySet = []int{}
 }
 
+// Removing item from list/array
+func remove(slice []int, val int) []int {
+	result := []int{}
+	for _, v := range slice {
+		if v != val {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
+/** --------------------------- Processors Handling Methods --------------------------- */
 // Invalidation of each copy set on the processor's side
 func (p *Processor) invalidateCopy(pageId int, replyChannel chan string) {
 	// Invalidate copy sets first
@@ -250,19 +303,158 @@ func (p *Processor) receivePage(request Request, page *Page, replyChannel chan s
 	replyChannel <- fmt.Sprintf("%s confirmation from processor [%d]", strings.Title(request.accessType), p.id)
 }
 
+/** --------------------------- Main --------------------------- */
+func main() {
+	// Creating initialized variables to play scenario
+	processorCount := 10  // Number of processors
+	pageCount := 1        // Number of pages
+	repeatCount := 10     // Number of experiment repetitions
+	requestsCount := 100  // Number of requests per repetition
+	simulationNumber := 3 // 0: No failures, 1: Single/Determined Main Failures, 2: Single/Determined Backup Failures, 3: Multiple Both Failures
+
+	// Initialization of CMs
+	mainCM := NewCentralManager(0)
+	backupCM := NewCentralManager(1)
+	backupCM.backup = true
+	cms = append(cms, mainCM)
+	cms = append(cms, backupCM)
+
+	// Initialize request queue and listen to it
+	requestChannels = make(map[int]chan Request)
+
+	// Start healthCheck for main server only
+	// Main server is the only one that needs healthCheck since it will be the primary
+	go cms[1].healthCheck(cms[0])
+
+	// Creating processors
+	for i := 0; i < processorCount; i++ {
+		processor := NewProcessor(i)
+		// cm.processors[i] = processor // Add processor to CM
+		processors = append(processors, processor)
+	}
+
+	// Go routine to listen to all the page channels
+	for i := 0; i < pageCount; i++ {
+		// Initialize processors
+		processors[i].cache[i] = nil
+		requestChannels[i] = make(chan Request)
+
+		// Initialize meta data and listen to API request queue
+		cms[0].metaData[i] = &PageMetaData{
+			owner:   -1,
+			copySet: []int{},
+		}
+
+		cms[1].metaData[i] = &PageMetaData{
+			owner:   -1,
+			copySet: []int{},
+		}
+		go cms[0].handleRequest(i)
+		go cms[1].handleRequest(i)
+	}
+
+	elapsed := time.Duration(0)
+	for i := 0; i < repeatCount; i++ {
+		requests = requestsCount // Reset count to know when to stop
+		// Start timer to see performance
+		start := time.Now()
+
+		// Simulate randomly making requests to CM
+		for i := 0; i < requestsCount; i++ {
+			// Randomize which page it should read
+			randomPage := rand.Intn(pageCount)
+			randomProcessor := rand.Intn(processorCount)
+			go simulateClientRequests(processors[randomProcessor], randomPage)
+		}
+
+		switch {
+		case simulationNumber == 0:
+			// ----------------------------- No failures -------------------------------------------
+			// Do nothing
+		case simulationNumber == 1:
+			// ----------------------------- Single/Determined Main Failures -----------------------
+			failureCount := 1
+			for i := 0; i < failureCount; i++ { // Failure must be synchronous
+				// Stop if requests is already 0
+				if requests == 0 {
+					continue
+				}
+				// Simulate failure of main CM
+				time.Sleep(150 * time.Millisecond)
+				cms[0].goesDown()
+
+				// Simulate coming back alive after awhile
+				time.Sleep(150 * time.Millisecond)
+				cms[0].comeAlive()
+			}
+		case simulationNumber == 2:
+			// ----------------------------- Single/Determined Main Failures -----------------------
+			failureCount := 1
+			for i := 0; i < failureCount; i++ { // Failure must be synchronous
+				// Stop if requests is already 0
+				if requests == 0 {
+					continue
+				}
+				// Simulate failure of main CM
+				time.Sleep(150 * time.Millisecond)
+				cms[0].goesDown()
+
+				// Simulate coming back alive after awhile
+				time.Sleep(150 * time.Millisecond)
+				cms[0].comeAlive()
+			}
+		case simulationNumber == 3:
+			// ---------------------------- Multiple Both Failures ---------------------------------
+			// Does not handle total system failure
+			for { // Failures must be synchronous
+				// Stop if requests is already 0
+				if requests == 0 {
+					break
+				}
+
+				// Randomize which CM to fail
+				failureCM := rand.Intn(2)
+
+				// Simulate failure of main CM
+				time.Sleep(150 * time.Millisecond)
+				cms[failureCM].goesDown()
+
+				// Simulate coming back alive after awhile
+				time.Sleep(150 * time.Millisecond)
+				cms[failureCM].comeAlive()
+			}
+		}
+
+		// Check if requests is < 0, end runtime
+		for {
+			if requests == 0 {
+				break
+			}
+		}
+
+		// End timer
+		elapsed += time.Since(start)
+	}
+
+	fmt.Println("=====================================================================================")
+	fmt.Printf("Average time taken across %d repetitions: %s\n", repeatCount, elapsed/time.Duration(repeatCount))
+	time.Sleep(1 * time.Second)
+}
+
+/** --------------------------- Simulation Methods --------------------------- */
 // Randomize read/write requests from the client
 func simulateClientRequests(processor *Processor, pageId int) {
 	// Randomizer to send read/write requests
 	if rand.Intn(2) == 0 {
 		// Read request
-		mainCM.requestChannel[pageId] <- Request{
+		requestChannels[pageId] <- Request{
 			processorId: processor.id,
 			accessType:  "read",
 		}
 		// fmt.Printf("Processor [%d] request to %s page %d\n", processor.id, "read", pageId)
 	} else {
 		// Write request
-		mainCM.requestChannel[pageId] <- Request{
+		requestChannels[pageId] <- Request{
 			processorId: processor.id,
 			accessType:  "write",
 		}
@@ -270,73 +462,33 @@ func simulateClientRequests(processor *Processor, pageId int) {
 	}
 }
 
-func main() {
-	mainCM = NewCentralManager(0)
-	backupCM = NewCentralManager(1)
-	backupCM.backup = true
-
-	go mainCM.healthCheck(backupCM)
-	go backupCM.healthCheck(mainCM)
-
-	// Creating processors
-	processorCount := 10
-	// var processors []*Processor
-	for i := 0; i < processorCount; i++ {
-		processor := NewProcessor(i)
-		// cm.processors[i] = processor // Add processor to CM
-		processors = append(processors, processor)
-	}
-
-	pageCount := 1
-	// Go routine to listen to all the page channels
-	for i := 0; i < pageCount; i++ {
-		// Initialize processors
-		processors[i].cache[i] = nil
-
-		// Initialize request queue and listen to it
-		mainCM.requestChannel[i] = make(chan Request, 10)
-		mainCM.metaData[i] = &PageMetaData{
-			owner:   -1,
-			copySet: []int{},
-		}
-
-		backupCM.requestChannel[i] = make(chan Request, 10)
-		backupCM.metaData[i] = &PageMetaData{
-			owner:   -1,
-			copySet: []int{},
-		}
-		go mainCM.handleRequest(i)
-		go backupCM.handleRequest(i)
-	}
-
-	// Start timer to see performance
-	start := time.Now()
-
-	requests = 10
-	requestsCount := requests
-	// Simulate randomly making requests to CM
-	for i := 0; i < requestsCount; i++ {
-		// Randomize which page it should read
-		randomPage := rand.Intn(pageCount)
-		randomProcessor := rand.Intn(processorCount)
-		go simulateClientRequests(processors[randomProcessor], randomPage)
-	}
-
-	// Simulate one random failure
-	time.Sleep(1 * time.Millisecond)
-	go func() {
-		mainCM.dead = true
-	}()
-
-	// Check if requests is < 0
+func (cm *CentralManager) goesDown() {
+	// Intentionally not break in between
 	for {
-		if requests == 0 {
+		if !inAccess {
 			break
 		}
 	}
 
-	// End timer
-	elapsed := time.Since(start)
-	fmt.Printf("Time taken: %s\n", elapsed)
-	time.Sleep(1 * time.Second)
+	// Simulate one random failure
+	fmt.Println("\n================================================================")
+	fmt.Printf("Simulating failure of CM [%d]\n", cm.id)
+	fmt.Printf("================================================================\n\n")
+	cm.dead = true
+}
+
+// Simulate coming back alive after awhile -- only used for mainCM
+func (cm *CentralManager) comeAlive() {
+	// Intentionally not duplicate data while in between
+	for {
+		if !inAccess {
+			break
+		}
+	}
+	fmt.Println("\n================================================================")
+	fmt.Printf("Simulating CM [%d] coming back alive\n", cm.id)
+	cm.dead = false
+	// Replicate data from the other CM, to simplify, we just replicate
+	cms[cm.id^1].replicateMetaData()
+	fmt.Printf("================================================================\n\n")
 }

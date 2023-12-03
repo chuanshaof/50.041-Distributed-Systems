@@ -105,6 +105,17 @@ func (cm *CentralManager) handleRequest(pageId int) {
 					processors[cm.metaData[pageId].owner].access[pageId] = "read"
 				}
 
+				// Check if already exists in copyset, send page immediately then
+				for _, processorId := range cm.metaData[pageId].copySet {
+					if processorId == request.processorId {
+						// Grant access to the requester
+						replyChannel := make(chan string)
+						go requester.receivePage(request, requester.cache[pageId], replyChannel)
+						fmt.Println(<-replyChannel)
+						continue
+					}
+				}
+
 				cm.readPage(request, pageId)
 			} else if request.accessType == "write" {
 				cm.writePage(request, pageId)
@@ -233,11 +244,16 @@ func simulateClientRequests(processor *Processor, pageId int) {
 }
 
 func main() {
+	// Creating initialized variables to play scenario
+	processorCount := 10 // Number of processors
+	pageCount := 1       // Number of pages
+	repeatCount := 10    // Number of experiment repetitions
+	requestsCount := 100 // Number of requests per repetition
+
 	cm = NewCentralManager()
 	requestChannels = make(map[int]chan Request)
 
 	// Creating processors
-	processorCount := 10
 	// var processors []*Processor
 	for i := 0; i < processorCount; i++ {
 		processor := NewProcessor(i, cm)
@@ -245,7 +261,6 @@ func main() {
 		processors = append(processors, processor)
 	}
 
-	pageCount := 2
 	// Go routine to listen to all the channels
 	for i := 0; i < pageCount; i++ {
 		// Initialize processors
@@ -260,14 +275,12 @@ func main() {
 		go cm.handleRequest(i)
 	}
 
-	repeatCount := 10
 	elapsed := time.Duration(0)
 	for i := 0; i < repeatCount; i++ {
 		// Start timer to see performance
 		start := time.Now()
 
-		requests = 100
-		requestsCount := requests
+		requests = requestsCount
 		// Simulate randomly making requests to CM
 		for i := 0; i < requestsCount; i++ {
 			// Randomize which page it should read
