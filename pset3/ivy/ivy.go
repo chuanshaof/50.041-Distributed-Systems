@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+var mu sync.Mutex
 var wg sync.WaitGroup
 var cm *CentralManager
 var processors []*Processor
@@ -31,7 +32,6 @@ type Request struct {
 
 // CentralManager manages the pages
 type CentralManager struct {
-	mu       sync.Mutex
 	metaData map[int]*PageMetaData // Store metadata of pages
 }
 
@@ -63,7 +63,7 @@ func (cm *CentralManager) handleRequest(pageId int) {
 	for {
 		select {
 		case request := <-requestChannels[pageId]:
-			cm.mu.Lock()
+			mu.Lock()
 			fmt.Printf("\nSTART: Handling processor [%d] request to %s page %d\n", request.processorId, request.accessType, pageId)
 
 			requester := processors[request.processorId]
@@ -131,7 +131,7 @@ func (cm *CentralManager) handleRequest(pageId int) {
 			// For the purpose of measuring performance
 			time.Sleep(1 * time.Millisecond)
 			requests = requests - 1
-			cm.mu.Unlock()
+			mu.Unlock()
 		}
 	}
 }

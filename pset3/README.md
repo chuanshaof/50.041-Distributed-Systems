@@ -139,9 +139,9 @@ The below table shows an average time taken (across 10 repetitions) to complete 
 | --------------- | --------------- |
 | No Fault Tolerant | 1.451 |
 | 0 | 1.455 | 
-| 1 | 1.468 |
-| 2 | 1.573 | 
-| 3 | 2.485 |
+| 1 | 1.532 |
+| 2 | 2.278 | 
+| 3 | 2.628 |
 
 Refer to the PDF within this folder for a detailed explanation of the results.
 

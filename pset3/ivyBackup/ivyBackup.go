@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+var mu sync.Mutex
 var wg sync.WaitGroup
 var cms []*CentralManager
 var processors []*Processor
@@ -33,7 +34,6 @@ type Request struct {
 // CentralManager manages the pages
 type CentralManager struct {
 	id       int
-	mu       sync.Mutex
 	metaData map[int]*PageMetaData // Store metadata of pages
 	backup   bool
 	dead     bool
@@ -95,7 +95,7 @@ func (cm *CentralManager) replicateMetaData() {
 	case reply := <-replicationChannel:
 		fmt.Printf(reply)
 	case <-time.After(1 * time.Millisecond): // Simulate waiting for reply
-		fmt.Printf("CM [%d] is dead, cannot replicate\n", cm.id)
+		fmt.Printf("CM [%d] is dead, cannot replicate\n", cm.id^1)
 	}
 }
 
@@ -117,89 +117,89 @@ func (cm *CentralManager) handleRequest(pageId int) {
 		// Skip the listener if it is a backup or dead
 		if cm.backup || cm.dead || inAccess {
 			continue
-		}
+		} else {
+			select {
+			case request := <-requestChannels[pageId]:
+				inAccess = true
+				mu.Lock()
+				fmt.Printf("\nSTART: CM [%d] Handling processor [%d] request to %s page %d\n", cm.id, request.processorId, request.accessType, pageId)
 
-		select {
-		case request := <-requestChannels[pageId]:
-			inAccess = true
-			cm.mu.Lock()
-			fmt.Printf("\nSTART: CM [%d] Handling processor [%d] request to %s page %d\n", cm.id, request.processorId, request.accessType, pageId)
+				requester := processors[request.processorId]
 
-			requester := processors[request.processorId]
-
-			// Check for access types
-			if cm.metaData[pageId].owner == -1 { // If the page has no owner
-				// Set owner to the processor
-				cm.metaData[pageId].owner = request.processorId
-
-				// Replication of metaData to ensure consistency
-				cm.replicateMetaData()
-
-				// Grant access to the requester
-				replyChannel := make(chan string)
-				page := &Page{
-					id:   pageId,
-					data: 1,
-				}
-				go requester.receivePage(request, page, replyChannel)
-				fmt.Println(<-replyChannel)
-			} else if request.processorId == cm.metaData[pageId].owner { // If it the owner
-				// For write requests, invalidate copy sets
-				if request.accessType == "write" {
-					cm.invalidateCopies(pageId)
-				}
-
-				// Grant access to the requester
-				replyChannel := make(chan string)
-				go requester.receivePage(request, requester.cache[pageId], replyChannel)
-				fmt.Println(<-replyChannel)
-			} else if request.accessType == "read" { // If it is a read request
-				// Check if it is currently in a "write" access state, change to "read"
-				// This will not happen as the owner would be the requester, handled above
-				if requester.access[pageId] == "write" {
-					requester.access[pageId] = "read"
-					continue
-				}
-
-				// Check if owner is currently in a "write" access state
-				if processors[cm.metaData[pageId].owner].access[pageId] == "write" {
-					// Block & wait until access is turned to "read"
-					// In this case, we simulate and bypass waiting
-					processors[cm.metaData[pageId].owner].access[pageId] = "read"
+				// Check for access types
+				if cm.metaData[pageId].owner == -1 { // If the page has no owner
+					// Set owner to the processor
+					cm.metaData[pageId].owner = request.processorId
 
 					// Replication of metaData to ensure consistency
 					cm.replicateMetaData()
-				}
 
-				// Check if already exists in copyset, send page immediately then
-				for _, processorId := range cm.metaData[pageId].copySet {
-					if processorId == request.processorId {
-						// Grant access to the requester
-						replyChannel := make(chan string)
-						go requester.receivePage(request, requester.cache[pageId], replyChannel)
-						fmt.Println(<-replyChannel)
+					// Grant access to the requester
+					replyChannel := make(chan string)
+					page := &Page{
+						id:   pageId,
+						data: 1,
+					}
+					go requester.receivePage(request, page, replyChannel)
+					fmt.Println(<-replyChannel)
+				} else if request.processorId == cm.metaData[pageId].owner { // If it the owner
+					// For write requests, invalidate copy sets
+					if request.accessType == "write" {
+						cm.invalidateCopies(pageId)
+					}
+
+					// Grant access to the requester
+					replyChannel := make(chan string)
+					go requester.receivePage(request, requester.cache[pageId], replyChannel)
+					fmt.Println(<-replyChannel)
+				} else if request.accessType == "read" { // If it is a read request
+					// Check if it is currently in a "write" access state, change to "read"
+					// This will not happen as the owner would be the requester, handled above
+					if requester.access[pageId] == "write" {
+						requester.access[pageId] = "read"
 						continue
 					}
+
+					// Check if owner is currently in a "write" access state
+					if processors[cm.metaData[pageId].owner].access[pageId] == "write" {
+						// Block & wait until access is turned to "read"
+						// In this case, we simulate and bypass waiting
+						processors[cm.metaData[pageId].owner].access[pageId] = "read"
+
+						// Replication of metaData to ensure consistency
+						cm.replicateMetaData()
+					}
+
+					// Check if already exists in copyset, send page immediately then
+					for _, processorId := range cm.metaData[pageId].copySet {
+						if processorId == request.processorId {
+							// Grant access to the requester
+							replyChannel := make(chan string)
+							go requester.receivePage(request, requester.cache[pageId], replyChannel)
+							fmt.Println(<-replyChannel)
+							continue
+						}
+					}
+
+					cm.readPage(request, pageId)
+				} else if request.accessType == "write" { // If it is a write request
+					cm.writePage(request, pageId)
 				}
 
-				cm.readPage(request, pageId)
-			} else if request.accessType == "write" { // If it is a write request
-				cm.writePage(request, pageId)
+				// Print the page entire's metadata
+				fmt.Printf("Page %d is now owned by [%d] with %s access\n", pageId, cm.metaData[pageId].owner, processors[cm.metaData[pageId].owner].access[pageId])
+
+				for i, page := range cm.metaData {
+					fmt.Printf("[CM %d MetaData] Page %d: Owner: %d, CopySet: %v\n", cm.id, i, page.owner, page.copySet)
+				}
+
+				// For the purpose of measuring performance
+				requests = requests - 1
+				inAccess = false
+				time.Sleep(1 * time.Millisecond)
+
+				mu.Unlock()
 			}
-
-			// Print the page entire's metadata
-			fmt.Printf("Page %d is now owned by [%d] with %s access\n", pageId, cm.metaData[pageId].owner, processors[cm.metaData[pageId].owner].access[pageId])
-
-			for i, page := range cm.metaData {
-				fmt.Printf("[CM %d MetaData] Page %d: Owner: %d, CopySet: %v\n", cm.id, i, page.owner, page.copySet)
-			}
-
-			// For the purpose of measuring performance
-			time.Sleep(1 * time.Millisecond)
-			requests = requests - 1
-			inAccess = false
-
-			cm.mu.Unlock()
 		}
 	}
 }
@@ -310,7 +310,7 @@ func main() {
 	pageCount := 1        // Number of pages
 	repeatCount := 10     // Number of experiment repetitions
 	requestsCount := 100  // Number of requests per repetition
-	simulationNumber := 3 // 0: No failures, 1: Single/Determined Main Failures, 2: Single/Determined Backup Failures, 3: Multiple Both Failures
+	simulationNumber := 0 // 0: No failures, 1: Single Main Failure, 2: Multiple Main Failures, 3: Multiple Main & Backup Failures
 
 	// Initialization of CMs
 	mainCM := NewCentralManager(0)
@@ -335,8 +335,7 @@ func main() {
 
 	// Go routine to listen to all the page channels
 	for i := 0; i < pageCount; i++ {
-		// Initialize processors
-		processors[i].cache[i] = nil
+		// Initialize request queues
 		requestChannels[i] = make(chan Request)
 
 		// Initialize meta data and listen to API request queue
@@ -344,7 +343,6 @@ func main() {
 			owner:   -1,
 			copySet: []int{},
 		}
-
 		cms[1].metaData[i] = &PageMetaData{
 			owner:   -1,
 			copySet: []int{},
@@ -388,13 +386,13 @@ func main() {
 				cms[0].comeAlive()
 			}
 		case simulationNumber == 2:
-			// ----------------------------- Single/Determined Main Failures -----------------------
-			failureCount := 1
-			for i := 0; i < failureCount; i++ { // Failure must be synchronous
+			// ----------------------------- Multiple Main Failures -------------------------------
+			for { // Failures must be synchronous
 				// Stop if requests is already 0
 				if requests == 0 {
-					continue
+					break
 				}
+
 				// Simulate failure of main CM
 				time.Sleep(150 * time.Millisecond)
 				cms[0].goesDown()
