@@ -7,4 +7,6 @@ use (
     /pset2/lamportQueue
     /pset2/ricartAgrawala
     /pset2/votingProtocol
+    /pset3/ivy
+    /pset3/ivyBackup
 )
