@@ -67,23 +67,15 @@ func NewProcessor(id int) *Processor {
 // Run constant healthCheck to see if other CM is dead -- only used for backupCM
 func (cm *CentralManager) healthCheck(otherCM *CentralManager) {
 	for {
-		if cm.dead {
-			return
-		}
-
 		// Check if the other CM is dead, if so, take over
 		if cm.backup && otherCM.dead {
 			cm.backup = false
 			fmt.Println("\n================================================================")
-			fmt.Println("Main CM down detected...")
 			fmt.Printf("CM [%d] has taken over\n", cm.id)
 			fmt.Println("================================================================")
 		} else if !otherCM.dead {
 			cm.backup = true
 		}
-
-		// Simulate polling to not flood the mainCM
-		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -310,7 +302,7 @@ func main() {
 	pageCount := 1        // Number of pages
 	repeatCount := 10     // Number of experiment repetitions
 	requestsCount := 100  // Number of requests per repetition
-	simulationNumber := 0 // 0: No failures, 1: Single Main Failure, 2: Multiple Main Failures, 3: Multiple Main & Backup Failures
+	simulationNumber := 2 // 0: No failures, 1: Single Main Failure, 2: Multiple Main Failures, 3: Multiple Main & Backup Failures
 
 	// Initialization of CMs
 	mainCM := NewCentralManager(0)
@@ -471,7 +463,7 @@ func (cm *CentralManager) goesDown() {
 	// Simulate one random failure
 	fmt.Println("\n================================================================")
 	fmt.Printf("Simulating failure of CM [%d]\n", cm.id)
-	fmt.Printf("================================================================\n\n")
+	fmt.Printf("===============================================================\n\n")
 	cm.dead = true
 }
 

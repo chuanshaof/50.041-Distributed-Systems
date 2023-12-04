@@ -137,11 +137,11 @@ The below table shows an average time taken (across 10 repetitions) to complete 
 
 | Simulation Case | Time Taken (s) | 
 | --------------- | --------------- |
-| No Fault Tolerant | 1.451 |
+| No Fault Tolerant | 1.441 |
 | 0 | 1.455 | 
 | 1 | 1.532 |
-| 2 | 2.278 | 
-| 3 | 2.628 |
+| 2 | 2.112 | 
+| 3 | 2.163 |
 
 Refer to the PDF within this folder for a detailed explanation of the results.
 
